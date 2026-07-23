@@ -33,6 +33,9 @@
 
 - (void)startCaptureWithFPS:(NSInteger)fps
                    sourceId:(NSString* _Nullable)sourceId
+                   maxWidth:(NSInteger)maxWidth
+                  maxHeight:(NSInteger)maxHeight
+                 showCursor:(BOOL)showCursor
                   onStarted:(void (^)(NSError * _Nullable error))onStarted {
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
   if (@available(macOS 12.3, *)) {
@@ -53,12 +56,15 @@
 
       SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
       SCStreamConfiguration *config = [SCStreamConfiguration new];
-      config.width = display.width;
-      config.height = display.height;
+      CGFloat widthScale = maxWidth > 0 ? (CGFloat)maxWidth / (CGFloat)display.width : 1.0;
+      CGFloat heightScale = maxHeight > 0 ? (CGFloat)maxHeight / (CGFloat)display.height : 1.0;
+      CGFloat scale = MIN(1.0, MIN(widthScale, heightScale));
+      config.width = MAX(1, (NSInteger)floor((CGFloat)display.width * scale));
+      config.height = MAX(1, (NSInteger)floor((CGFloat)display.height * scale));
       config.minimumFrameInterval = CMTimeMake(1, (int32_t)MAX(1, fps));
       config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
       if (@available(macOS 13.0, *)) {
-        config.showsCursor = YES;
+        config.showsCursor = showCursor;
       }
 
       self.stream = [[SCStream alloc] initWithFilter:filter configuration:config delegate:nil];

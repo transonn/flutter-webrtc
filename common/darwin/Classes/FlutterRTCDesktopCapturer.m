@@ -20,6 +20,15 @@ RTCDesktopMediaList* _window = nil;
 NSArray<RTCDesktopSource*>* _captureSources;
 #endif
 
+@interface FlutterWebRTCPlugin (DesktopCapturerHelpers)
+- (void)finishDisplayMediaWithMediaStream:(RTCMediaStream *)mediaStream
+                             mediaStreamId:(NSString *)mediaStreamId
+                              videoSource:(RTCVideoSource *)videoSource
+                                trackUUID:(NSString *)trackUUID
+                   videoProcessingAdapter:(VideoProcessingAdapter *)videoProcessingAdapter
+                                    result:(FlutterResult)result;
+@end
+
 @implementation FlutterWebRTCPlugin (DesktopCapturer)
 
 - (void)getDisplayMedia:(NSDictionary*)constraints result:(FlutterResult)result {
@@ -93,10 +102,18 @@ NSArray<RTCDesktopSource*>* _captureSources;
   NSString* sourceId = nil;
   BOOL useDefaultScreen = NO;
   NSInteger fps = 30;
+  NSInteger maxWidth = 0;
+  NSInteger maxHeight = 0;
+  BOOL showCursor = YES;
   id videoConstraints = constraints[@"video"];
   if ([videoConstraints isKindOfClass:[NSNumber class]] && [videoConstraints boolValue] == YES) {
     useDefaultScreen = YES;
   } else if ([videoConstraints isKindOfClass:[NSDictionary class]]) {
+    id cursor = videoConstraints[@"cursor"];
+    if ([cursor isKindOfClass:[NSString class]] &&
+        [cursor caseInsensitiveCompare:@"never"] == NSOrderedSame) {
+      showCursor = NO;
+    }
     NSDictionary* deviceId = videoConstraints[@"deviceId"];
     if (deviceId != nil && [deviceId isKindOfClass:[NSDictionary class]]) {
       if (deviceId[@"exact"] != nil) {
@@ -115,6 +132,14 @@ NSArray<RTCDesktopSource*>* _captureSources;
       id frameRate = mandatory[@"frameRate"];
       if (frameRate != nil && [frameRate isKindOfClass:[NSNumber class]]) {
         fps = [frameRate integerValue];
+      }
+      id requestedMaxWidth = mandatory[@"maxWidth"];
+      if (requestedMaxWidth != nil && [requestedMaxWidth isKindOfClass:[NSNumber class]]) {
+        maxWidth = [requestedMaxWidth integerValue];
+      }
+      id requestedMaxHeight = mandatory[@"maxHeight"];
+      if (requestedMaxHeight != nil && [requestedMaxHeight isKindOfClass:[NSNumber class]]) {
+        maxHeight = [requestedMaxHeight integerValue];
       }
     }
   }
@@ -145,14 +170,37 @@ NSArray<RTCDesktopSource*>* _captureSources;
           [[FlutterScreenCaptureKitCapturer alloc] initWithDelegate:videoProcessingAdapter];
       [screenCaptureKitCapturer startCaptureWithFPS:fps
                                            sourceId:sourceId
+                                           maxWidth:maxWidth
+                                          maxHeight:maxHeight
+                                          showCursor:showCursor
                                           onStarted:^(NSError * _Nullable error) {
-                                            if (error != nil) {
-                                              NSLog(@"ScreenCaptureKit start failed: %@", error);
-                                            } else {
+                                            dispatch_async(dispatch_get_main_queue(), ^{
+                                              if (error != nil) {
+                                                NSLog(@"ScreenCaptureKit start failed: %@", error);
+                                                result([FlutterError
+                                                    errorWithCode:@"screen_capture_start_failed"
+                                                          message:error.localizedDescription
+                                                          details:nil]);
+                                                return;
+                                              }
                                               NSLog(@"start screencapturekit capture: for  sourceId: %@, fps: %lu",
                                                     sourceId, fps);
-                                            }
+                                              self.videoCapturerStopHandlers[trackUUID] =
+                                                  ^(CompletionHandler handler) {
+                                                NSLog(@"stop screencapturekit capture: trackID %@",
+                                                      trackUUID);
+                                                [screenCaptureKitCapturer
+                                                    stopCaptureWithCompletion:handler];
+                                              };
+                                              [self finishDisplayMediaWithMediaStream:mediaStream
+                                                                       mediaStreamId:mediaStreamId
+                                                                         videoSource:videoSource
+                                                                           trackUUID:trackUUID
+                                                              videoProcessingAdapter:videoProcessingAdapter
+                                                                               result:result];
+                                            });
                                           }];
+      return;
     } else {
       NSLog(@"ScreenCaptureKit not available, falling back to RTCDesktopCapturer");
       desktopCapturer = [[RTCDesktopCapturer alloc] initWithDefaultScreen:self
@@ -171,14 +219,23 @@ NSArray<RTCDesktopSource*>* _captureSources;
       [desktopCapturer stopCapture];
       handler();
     };
-  } else {
-    self.videoCapturerStopHandlers[trackUUID] = ^(CompletionHandler handler) {
-      NSLog(@"stop screencapturekit capture: trackID %@", trackUUID);
-      [screenCaptureKitCapturer stopCaptureWithCompletion:handler];
-    };
   }
 #endif
 
+  [self finishDisplayMediaWithMediaStream:mediaStream
+                             mediaStreamId:mediaStreamId
+                              videoSource:videoSource
+                                trackUUID:trackUUID
+                   videoProcessingAdapter:videoProcessingAdapter
+                                    result:result];
+}
+
+- (void)finishDisplayMediaWithMediaStream:(RTCMediaStream *)mediaStream
+                             mediaStreamId:(NSString *)mediaStreamId
+                              videoSource:(RTCVideoSource *)videoSource
+                                trackUUID:(NSString *)trackUUID
+                   videoProcessingAdapter:(VideoProcessingAdapter *)videoProcessingAdapter
+                                    result:(FlutterResult)result {
   RTCVideoTrack* videoTrack = [self.peerConnectionFactory videoTrackWithSource:videoSource
                                                                        trackId:trackUUID];
   [mediaStream addVideoTrack:videoTrack];
