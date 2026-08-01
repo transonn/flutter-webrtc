@@ -2,7 +2,6 @@
 
 #include <cerrno>
 #include <cstdlib>
-#include <limits>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -20,20 +19,6 @@ struct CaptureSize {
   uint32_t height = 0;
 };
 
-int PositiveConstraint(const EncodableMap& constraints,
-                       const std::string& key) {
-  const EncodableValue value = findEncodableValue(constraints, key);
-  if (TypeIs<int>(value)) {
-    const int parsed = GetValue<int>(value);
-    return parsed > 0 ? parsed : 0;
-  }
-  if (TypeIs<double>(value)) {
-    const int parsed = static_cast<int>(GetValue<double>(value));
-    return parsed > 0 ? parsed : 0;
-  }
-  return 0;
-}
-
 #ifdef _WIN32
 CaptureSize ScreenSize(const std::string& source_id) {
   char* end = nullptr;
@@ -49,8 +34,7 @@ CaptureSize ScreenSize(const std::string& source_id) {
         static_cast<uint32_t>(GetSystemMetrics(SM_CYVIRTUALSCREEN)),
     };
   }
-  if (parsed < 0 ||
-      parsed > static_cast<long long>((std::numeric_limits<DWORD>::max)())) {
+  if (parsed < 0 || parsed > MAXDWORD) {
     return {};
   }
 
@@ -67,32 +51,6 @@ CaptureSize ScreenSize(const std::string& source_id) {
     return {};
   }
   return {mode.dmPelsWidth, mode.dmPelsHeight};
-}
-
-CaptureSize ConstrainedScreenSize(const std::string& source_id,
-                                  int max_width,
-                                  int max_height) {
-  const CaptureSize source = ScreenSize(source_id);
-  if (source.width == 0 || source.height == 0) {
-    return {};
-  }
-
-  double scale = 1.0;
-  if (max_width > 0) {
-    const double width_scale = static_cast<double>(max_width) / source.width;
-    scale = width_scale < scale ? width_scale : scale;
-  }
-  if (max_height > 0) {
-    const double height_scale = static_cast<double>(max_height) / source.height;
-    scale = height_scale < scale ? height_scale : scale;
-  }
-  if (scale >= 1.0) {
-    return {};
-  }
-
-  uint32_t width = static_cast<uint32_t>(source.width * scale) & ~1u;
-  uint32_t height = static_cast<uint32_t>(source.height * scale) & ~1u;
-  return {width > 2u ? width : 2u, height > 2u ? height : 2u};
 }
 #endif
 
@@ -286,8 +244,6 @@ void FlutterScreenCapture::GetDisplayMedia(
   // DesktopType source_type = kScreen;
   double fps = 30.0;
   bool show_cursor = true;
-  int max_width = 0;
-  int max_height = 0;
 
   const EncodableMap video = findMap(constraints, "video");
   if (video != EncodableMap()) {
@@ -308,8 +264,6 @@ void FlutterScreenCapture::GetDisplayMedia(
       if (frameRate != 0.0) {
         fps = frameRate;
       }
-      max_width = PositiveConstraint(mandatory, "maxWidth");
-      max_height = PositiveConstraint(mandatory, "maxHeight");
     }
     show_cursor = findString(video, "cursor") != "never";
   }
@@ -438,6 +392,19 @@ void FlutterScreenCapture::GetDisplayMedia(
   info[EncodableValue("label")] = EncodableValue(track->id().std_string());
   info[EncodableValue("kind")] = EncodableValue(track->kind().std_string());
   info[EncodableValue("enabled")] = EncodableValue(track->enabled());
+#ifdef _WIN32
+  if (source->type() == DesktopType::kScreen) {
+    const CaptureSize screen_size = ScreenSize(source_id);
+    if (screen_size.width > 0 && screen_size.height > 0) {
+      info[EncodableValue("settings")] = EncodableValue(EncodableMap{
+          {EncodableValue("width"),
+           EncodableValue(static_cast<int>(screen_size.width))},
+          {EncodableValue("height"),
+           EncodableValue(static_cast<int>(screen_size.height))},
+      });
+    }
+  }
+#endif
   videoTracks.push_back(EncodableValue(info));
   params[EncodableValue("videoTracks")] = EncodableValue(videoTracks);
 
@@ -447,20 +414,10 @@ void FlutterScreenCapture::GetDisplayMedia(
 
   base_->local_streams_[uuid] = stream;
 
-#ifdef _WIN32
-  const CaptureSize capture_size =
-      source->type() == DesktopType::kScreen
-          ? ConstrainedScreenSize(source_id, max_width, max_height)
-          : CaptureSize{};
-  if (capture_size.width > 0 && capture_size.height > 0) {
-    desktop_capturer->Start(uint32_t(fps), 0, 0, capture_size.width,
-                            capture_size.height);
-  } else {
-    desktop_capturer->Start(uint32_t(fps));
-  }
-#else
+  // The overload with x/y/width/height captures a rectangle; it does not
+  // resize the desktop. Keep the complete frame here and let the RTP sender
+  // scale it so every edge of the selected display remains visible.
   desktop_capturer->Start(uint32_t(fps));
-#endif
 
   result->Success(EncodableValue(params));
 }

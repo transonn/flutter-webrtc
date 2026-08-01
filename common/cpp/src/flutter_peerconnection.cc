@@ -173,18 +173,32 @@ EncodableMap rtpParametersToMap(
        encodings.std_vector()) {
     EncodableMap map;
     map[EncodableValue("active")] = EncodableValue(encoding->active());
-    map[EncodableValue("maxBitrate")] =
-        EncodableValue(encoding->max_bitrate_bps());
-    map[EncodableValue("minBitrate")] =
-        EncodableValue(encoding->min_bitrate_bps());
-    map[EncodableValue("maxFramerate")] =
-        EncodableValue(static_cast<int>(encoding->max_framerate()));
+    const int max_bitrate = encoding->max_bitrate_bps();
+    if (max_bitrate > 0) {
+      map[EncodableValue("maxBitrate")] = EncodableValue(max_bitrate);
+    }
+    const int min_bitrate = encoding->min_bitrate_bps();
+    if (min_bitrate > 0) {
+      map[EncodableValue("minBitrate")] = EncodableValue(min_bitrate);
+    }
+    const int max_framerate =
+        static_cast<int>(encoding->max_framerate());
+    if (max_framerate > 0) {
+      map[EncodableValue("maxFramerate")] = EncodableValue(max_framerate);
+    }
     map[EncodableValue("scaleResolutionDownBy")] =
         EncodableValue(encoding->scale_resolution_down_by());
-    map[EncodableValue("scalabilityMode")] =
-        EncodableValue(encoding->scalability_mode().std_string());
-    map[EncodableValue("ssrc")] =
-        EncodableValue(static_cast<int>(encoding->ssrc()));
+    const std::string scalability_mode =
+        encoding->scalability_mode().std_string();
+    if (!scalability_mode.empty()) {
+      map[EncodableValue("scalabilityMode")] =
+          EncodableValue(scalability_mode);
+    }
+    const uint32_t ssrc = encoding->ssrc();
+    if (ssrc > 0) {
+      map[EncodableValue("ssrc")] =
+          EncodableValue(static_cast<int>(ssrc));
+    }
     map[EncodableValue("priority")] =
         EncodableValue(bitratePriorityToString(encoding->bitrate_priority()));
     map[EncodableValue("networkPriority")] =
@@ -794,6 +808,7 @@ scoped_refptr<RTCRtpParameters> FlutterPeerConnection::updateRtpParameters(
       encoding++;
     }
   }
+  parameters->set_encodings(params);
 
   EncodableValue value =
       findEncodableValue(newParameters, "degradationPreference");
