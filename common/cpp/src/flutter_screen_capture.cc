@@ -189,6 +189,7 @@ void FlutterScreenCapture::GetDisplayMedia(
   std::string source_id = "0";
   // DesktopType source_type = kScreen;
   double fps = 30.0;
+  bool show_cursor = true;
 
   const EncodableMap video = findMap(constraints, "video");
   if (video != EncodableMap()) {
@@ -210,6 +211,7 @@ void FlutterScreenCapture::GetDisplayMedia(
         fps = frameRate;
       }
     }
+    show_cursor = findString(video, "cursor") != "never";
   }
 
   std::string uuid = base_->GenerateUUID();
@@ -309,7 +311,7 @@ void FlutterScreenCapture::GetDisplayMedia(
   }
 
   scoped_refptr<RTCDesktopCapturer> desktop_capturer =
-      base_->desktop_device_->CreateDesktopCapturer(source);
+      base_->desktop_device_->CreateDesktopCapturer(source, show_cursor);
 
   if (!desktop_capturer.get()) {
     result->Error("Bad Arguments", "CreateDesktopCapturer failed!");
