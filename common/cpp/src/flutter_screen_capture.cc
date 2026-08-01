@@ -1,6 +1,102 @@
 #include "flutter_screen_capture.h"
 
+#include <cerrno>
+#include <cstdlib>
+#include <limits>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace flutter_webrtc_plugin {
+
+namespace {
+
+struct CaptureSize {
+  uint32_t width = 0;
+  uint32_t height = 0;
+};
+
+int PositiveConstraint(const EncodableMap& constraints,
+                       const std::string& key) {
+  const EncodableValue value = findEncodableValue(constraints, key);
+  if (TypeIs<int>(value)) {
+    const int parsed = GetValue<int>(value);
+    return parsed > 0 ? parsed : 0;
+  }
+  if (TypeIs<double>(value)) {
+    const int parsed = static_cast<int>(GetValue<double>(value));
+    return parsed > 0 ? parsed : 0;
+  }
+  return 0;
+}
+
+#ifdef _WIN32
+CaptureSize ScreenSize(const std::string& source_id) {
+  char* end = nullptr;
+  errno = 0;
+  const long long parsed = std::strtoll(source_id.c_str(), &end, 10);
+  if (errno != 0 || end == source_id.c_str() || *end != '\0') {
+    return {};
+  }
+
+  if (parsed == -1) {
+    return {
+        static_cast<uint32_t>(GetSystemMetrics(SM_CXVIRTUALSCREEN)),
+        static_cast<uint32_t>(GetSystemMetrics(SM_CYVIRTUALSCREEN)),
+    };
+  }
+  if (parsed < 0 ||
+      parsed > static_cast<long long>((std::numeric_limits<DWORD>::max)())) {
+    return {};
+  }
+
+  DISPLAY_DEVICEW device = {};
+  device.cb = sizeof(device);
+  if (!EnumDisplayDevicesW(nullptr, static_cast<DWORD>(parsed), &device, 0)) {
+    return {};
+  }
+
+  DEVMODEW mode = {};
+  mode.dmSize = sizeof(mode);
+  if (!EnumDisplaySettingsExW(device.DeviceName, ENUM_CURRENT_SETTINGS, &mode,
+                              0)) {
+    return {};
+  }
+  return {mode.dmPelsWidth, mode.dmPelsHeight};
+}
+
+CaptureSize ConstrainedScreenSize(const std::string& source_id,
+                                  int max_width,
+                                  int max_height) {
+  const CaptureSize source = ScreenSize(source_id);
+  if (source.width == 0 || source.height == 0) {
+    return {};
+  }
+
+  double scale = 1.0;
+  if (max_width > 0) {
+    const double width_scale = static_cast<double>(max_width) / source.width;
+    scale = width_scale < scale ? width_scale : scale;
+  }
+  if (max_height > 0) {
+    const double height_scale = static_cast<double>(max_height) / source.height;
+    scale = height_scale < scale ? height_scale : scale;
+  }
+  if (scale >= 1.0) {
+    return {};
+  }
+
+  uint32_t width = static_cast<uint32_t>(source.width * scale) & ~1u;
+  uint32_t height = static_cast<uint32_t>(source.height * scale) & ~1u;
+  return {width > 2u ? width : 2u, height > 2u ? height : 2u};
+}
+#endif
+
+}  // namespace
 
 FlutterScreenCapture::FlutterScreenCapture(FlutterWebRTCBase* base)
     : base_(base) {}
@@ -190,6 +286,8 @@ void FlutterScreenCapture::GetDisplayMedia(
   // DesktopType source_type = kScreen;
   double fps = 30.0;
   bool show_cursor = true;
+  int max_width = 0;
+  int max_height = 0;
 
   const EncodableMap video = findMap(constraints, "video");
   if (video != EncodableMap()) {
@@ -210,6 +308,8 @@ void FlutterScreenCapture::GetDisplayMedia(
       if (frameRate != 0.0) {
         fps = frameRate;
       }
+      max_width = PositiveConstraint(mandatory, "maxWidth");
+      max_height = PositiveConstraint(mandatory, "maxHeight");
     }
     show_cursor = findString(video, "cursor") != "never";
   }
@@ -347,7 +447,20 @@ void FlutterScreenCapture::GetDisplayMedia(
 
   base_->local_streams_[uuid] = stream;
 
+#ifdef _WIN32
+  const CaptureSize capture_size =
+      source->type() == DesktopType::kScreen
+          ? ConstrainedScreenSize(source_id, max_width, max_height)
+          : CaptureSize{};
+  if (capture_size.width > 0 && capture_size.height > 0) {
+    desktop_capturer->Start(uint32_t(fps), 0, 0, capture_size.width,
+                            capture_size.height);
+  } else {
+    desktop_capturer->Start(uint32_t(fps));
+  }
+#else
   desktop_capturer->Start(uint32_t(fps));
+#endif
 
   result->Success(EncodableValue(params));
 }
